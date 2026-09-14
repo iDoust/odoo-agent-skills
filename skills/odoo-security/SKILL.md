@@ -17,6 +17,7 @@ permissions.
 4. Validate untrusted input and review raw SQL, file uploads, and external API
    payloads.
 5. Add focused allowed and denied tests for each meaningful permission boundary.
+6. Verify perimeter rate limiting and brute-force defenses on authentication endpoints (`/web/login`) and public API controllers.
 
 Load `../../references/security/common.md` (and its sub-references:
 `../../references/security/patterns.md`, `../../references/security/multi-company.md`,

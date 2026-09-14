@@ -1014,6 +1014,145 @@ rev_res.raise_for_status()
 
 ---
 
+## Circuit Breaker Pattern for External API Resilience
+
+### Why Circuit Breakers are Critical in Odoo
+
+When integrating Odoo with external services (Payment Gateways, Shipping/Courier APIs, Tax/E-invoicing Authorities), an outage or high latency (e.g. 30s timeout) on the external provider creates a **cascading worker exhaustion**:
+1. Incoming transactions block waiting for the remote HTTP response.
+2. All available Odoo transactional workers quickly become occupied.
+3. The entire Odoo instance hangs, throwing HTTP 502/504 errors for all internal users.
+
+The Circuit Breaker pattern prevents this by failing fast (in 0 ms) when an external endpoint is degraded.
+
+```
+                  ┌─────────────┐
+        ┌─────────│   CLOSED    │◄────────┐
+        │         │   (Normal)  │         │
+Failure │         └─────────────┘         │ Success
+count >=│                │                │
+threshold                │                │
+        │                ▼                │
+        │         ┌─────────────┐         │
+        └────────►│    OPEN     │         │
+                  │ (Fail-Fast) │         │
+                  └─────────────┘         │
+                         │                │
+          Cooldown timer │                │
+             expires     ▼                │
+                  ┌─────────────┐         │
+                  │  HALF-OPEN  │─────────┘
+                  │   (Probe)   │
+                  └─────────────┘
+                         │
+                         │ Probe fails
+                         ▼
+```
+
+### Production Implementation Pattern
+
+```python
+import logging
+import time
+import requests
+from odoo import models, api, _
+from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
+
+
+class CircuitBreakerOpenException(UserError):
+    """Raised when external service is degraded and circuit is open."""
+    pass
+
+
+class ExternalServiceCircuitBreaker:
+    """In-memory circuit breaker for third-party HTTP integrations."""
+
+    _instances = {}
+
+    @classmethod
+    def get(cls, service_name, failure_threshold=5, recovery_timeout=60.0):
+        if service_name not in cls._instances:
+            cls._instances[service_name] = cls(service_name, failure_threshold, recovery_timeout)
+        return cls._instances[service_name]
+
+    def __init__(self, service_name, failure_threshold=5, recovery_timeout=60.0):
+        self.service_name = service_name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF-OPEN
+        self.failure_count = 0
+        self.last_failure_time = 0.0
+
+    def call(self, request_func, *args, **kwargs):
+        now = time.time()
+
+        # Check state transition from OPEN to HALF-OPEN
+        if self.state == "OPEN":
+            if now - self.last_failure_time > self.recovery_timeout:
+                _logger.info("CircuitBreaker [%s]: Entering HALF-OPEN trial probe", self.service_name)
+                self.state = "HALF-OPEN"
+            else:
+                # Fail fast immediately without making network connection
+                raise CircuitBreakerOpenException(
+                    _("External service '%s' is temporarily unavailable. Request dropped or queued.")
+                    % self.service_name
+                )
+
+        # Enforce strict socket timeouts on third-party calls
+        kwargs.setdefault('timeout', (3.05, 10.0))  # 3.05s connect, 10s read
+
+        try:
+            response = request_func(*args, **kwargs)
+            response.raise_for_status()
+
+            if self.state == "HALF-OPEN":
+                _logger.info("CircuitBreaker [%s]: Service recovered. Circuit reset to CLOSED", self.service_name)
+                self.state = "CLOSED"
+                self.failure_count = 0
+
+            return response
+
+        except Exception as exc:
+            self.failure_count += 1
+            self.last_failure_time = now
+            _logger.warning(
+                "CircuitBreaker [%s]: Failure %d/%d recorded (%s)",
+                self.service_name, self.failure_count, self.failure_threshold, exc
+            )
+
+            if self.failure_count >= self.failure_threshold or self.state == "HALF-OPEN":
+                self.state = "OPEN"
+                _logger.error("CircuitBreaker [%s]: Circuit tripped to OPEN state!", self.service_name)
+
+            raise
+```
+
+### Usage with Asynchronous Fallback Queue
+
+When the circuit is open, do not block the user's action. Enqueue the task into `queue_job` for background retry:
+
+```python
+def action_sync_external_order(self):
+    self.ensure_one()
+    cb = ExternalServiceCircuitBreaker.get("logistics_provider_api", failure_threshold=3, recovery_timeout=45.0)
+
+    try:
+        response = cb.call(
+            requests.post,
+            "https://api.logistics.com/v1/shipments",
+            json={"order_ref": self.name},
+        )
+        self.tracking_number = response.json().get('tracking_id')
+    except CircuitBreakerOpenException:
+        # Fallback: schedule background retry via queue_job without blocking transaction
+        self.with_delay(priority=20)._retry_sync_external_order()
+        self.message_post(body=_("Logistics API is temporarily degraded. Sync job queued for background retry."))
+```
+
+---
+
 ## Best Practices
 
 1. **Always use Developer API Keys** - Never use user master passwords in automated integrations.

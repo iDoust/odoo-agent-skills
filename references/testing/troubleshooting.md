@@ -1,5 +1,15 @@
 # Odoo debugging reference
 
+## Request & Defect Intake Triad
+
+Frame every user request, bug report, or issue into three explicit parts before diagnosing:
+
+1. **User Problem**: The business goal, context, or what the user is trying to accomplish.
+2. **Current Condition / Actual Behavior**: What is currently happening (exact traceback, wrong calculation, missing field, or blocked action).
+3. **Expected Result**: The observable desired outcome, expected data state, or clean transition.
+
+## Diagnostic Classification
+
 Classify the failure before choosing a fix:
 
 - server traceback or RPC error: read the complete Python traceback and locate
@@ -18,3 +28,11 @@ Classify the failure before choosing a fix:
 Always separate the transport symptom from the root exception. Inspect all
 callers of a shared method before adding a guard, and leave one focused
 reproduction or regression test behind.
+
+## Related References
+
+- [Shared Testing Baseline](common.md)
+- [Master Testing Handbook](odoo.md)
+- [QA / SIT Test Planning](qa-plan.md)
+- [Debugging Workflow](../../skills/odoo-debug/SKILL.md)
+- [Interactive Shell & Diagnostics](../operations/cli-and-shell.md)

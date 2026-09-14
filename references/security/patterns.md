@@ -15,6 +15,14 @@ Odoo implements a multi-layered security model:
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│  Layer 0: Edge & Perimeter Hardening                            │
+│  - Rate limiting (login 5 req/min, APIs 60 req/min)             │
+│  - Brute-force protection (Fail2ban login jail)                 │
+│  - Reverse proxy TLS termination & CORS rules                   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │  Layer 1: Authentication                                        │
 │  - User login verification                                      │
 │  - Session management                                           │
@@ -290,10 +298,20 @@ return record.sensitive_data
 # record.check_access_rule('read')
 ```
 
+## Edge Hardening & Rate Limiting
+
+### Authentication Brute Force Defense
+Odoo login routes (`/web/login`, `/web/reset_password`) must be defended against credential stuffing and automated attacks:
+1. **Reverse Proxy Rate Limiting**: Enforce maximum 5 requests/minute per client IP via Nginx `limit_req_zone` (configured in [deployment.md](../operations/deployment.md)).
+2. **Automated Host Banning**: Use Fail2ban with regex matching `odoo.addons.base.models.res_users: Login failed for db:` to block attacking IPs at the firewall (`iptables` / `nftables`) level after 5 consecutive failures.
+3. **Public API Throttling**: Restrict unauthenticated JSON-RPC / REST endpoints to prevent denial-of-service against worker processes.
+
 ## Security Testing Checklist
 
 ### Before Deployment
 
+- [ ] Rate limiting enabled on login and public API routes
+- [ ] Brute-force ban policy configured and tested with Fail2ban
 - [ ] All models have access rights defined
 - [ ] Sensitive models have record rules
 - [ ] Multi-company rules are in place

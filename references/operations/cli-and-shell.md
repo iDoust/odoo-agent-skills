@@ -331,6 +331,52 @@ orphans = env.cr.fetchall()
 print(f"Orphan order lines found: {len(orphans)}")
 ```
 
+### G. Production Data Repair & Hotfix Protocol (Safe Data Mutation)
+
+When production bugs corrupt records or leave inconsistent database states, execute repairs using this four-step safety protocol:
+
+1. **Quantify & Dry Run**: Inspect affected record IDs and verify counts before updating.
+2. **Atomic Savepoint**: Wrap updates in `with env.cr.savepoint():` so that exceptions roll back partial state cleanly.
+3. **Mute Notification Spam**: Use context flags `mail_notrack=True`, `tracking_disable=True`, and `mail_create_nolog=True` to prevent spamming customers or followers with chatter emails.
+4. **Recompute & Audit**: Recompute derived stored fields and verify data invariants before committing.
+
+```python
+# Production Hotfix Script Template (run via: odoo-bin shell -d db --no-http < fix.py)
+import logging
+_logger = logging.getLogger("odoo.hotfix")
+
+# 1. Quantify records needing repair
+affected_records = env['account.move'].search([
+    ('state', '=', 'posted'),
+    ('amount_residual', '<', 0),
+])
+_logger.info("Found %d inconsistent records to repair.", len(affected_records))
+
+# 2. Execute safe atomic repair
+try:
+    with env.cr.savepoint():
+        # 3. Mute notification spam
+        safe_env = env(context=dict(env.context, mail_notrack=True, tracking_disable=True, mail_create_nolog=True))
+        
+        # 4. Process in chunks
+        chunk_size = 100
+        for i in range(0, len(affected_records), chunk_size):
+            chunk = affected_records[i:i + chunk_size]
+            for move in chunk.with_env(safe_env):
+                move._compute_amount()
+            _logger.info("Repaired chunk %d to %d", i, i + len(chunk))
+        
+        # Verify invariants
+        assert all(m.amount_residual >= 0 for m in affected_records), "Post-check failed: negative residual remains!"
+        
+        # Explicit commit ONLY after full verification succeeds
+        env.cr.commit()
+        _logger.info("Data repair committed successfully.")
+except Exception as e:
+    env.cr.rollback()
+    _logger.error("Hotfix aborted and rolled back due to error: %s", e)
+```
+
 ---
 
 ## 7. SQL Diagnostics and Query Profiling in Shell

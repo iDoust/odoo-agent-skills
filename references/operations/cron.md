@@ -542,6 +542,76 @@ class AccountRecurringInvoice(models.Model):
                     continue
 ```
 
+---
+
+## Asynchronous Job Queues: `ir.cron` vs OCA `queue_job`
+
+While Odoo's native `ir.cron` handles time-based recurring schedules, high-volume production deployments require an **asynchronous job queue** for event-driven background processing.
+
+### Decision Matrix
+
+| Requirement | Native `ir.cron` | OCA `queue_job` |
+| :--- | :--- | :--- |
+| **Execution Trigger** | Periodic time interval (minutes/hours/days) | Event-driven instant enqueue (`with_delay()`) |
+| **User Experience** | Background polling only | Sub-second UI response (delegates work instantly) |
+| **Automatic Retry** | Manual re-run on next cron cycle | Automatic retry with configurable exponential backoff |
+| **Channel & Concurrency** | Shared cron worker threads | Dedicated priority channels (e.g. fast mail vs heavy sync) |
+| **Visibility & Audit** | Basic execution log in `ir.cron` | Full UI job tracking: Pending, Enqueued, Started, Done, Failed |
+| **Ideal Use Cases** | Nightly backups, daily subscription generation | Marketplace sync, carrier API labels, bulk notifications |
+
+### OCA `queue_job` Implementation Pattern
+
+#### 1. Manifest Dependency
+In `__manifest__.py`:
+```python
+{
+    'name': 'Marketplace Integration',
+    'depends': ['sale', 'queue_job'],
+    'data': [
+        'data/queue_job_channel_data.xml',
+    ],
+}
+```
+
+#### 2. Model Method Definition (`@job`)
+```python
+from odoo import models, api
+from odoo.addons.queue_job.job import job
+
+
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
+
+    @job(default_channel='root.integration', retry_pattern={1: 60, 2: 300, 3: 900})
+    def _async_sync_order_to_erp(self, target_system='sap'):
+        """Executed asynchronously by a queue_job background worker."""
+        self.ensure_one()
+        # External HTTP request or heavy payload transformation
+        payload = self._prepare_external_payload()
+        response = self._call_external_api(target_system, payload)
+        self.write({'external_sync_id': response.get('id')})
+```
+
+#### 3. Enqueueing from UI or Controller
+```python
+def action_confirm(self):
+    res = super().action_confirm()
+    for order in self:
+        # Enqueue job immediately: returns instantly to the user without blocking HTTP worker
+        order.with_delay(priority=10, description=f"Sync SO {order.name} to SAP")._async_sync_order_to_erp()
+    return res
+```
+
+#### 4. Server Configuration (`odoo.conf`)
+```ini
+[options]
+server_wide_modules = base,web,queue_job
+# Channel worker concurrency allocation
+queue_job.channels = root:2,root.integration:4,root.mail:2
+```
+
+---
+
 ## Related References
 
 - [Email & Mail Routing](mail.md)

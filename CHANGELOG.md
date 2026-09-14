@@ -29,6 +29,26 @@
   integration patterns, and version delta documents.
 - Expanded `odoo-development`, `odoo-debug`, `odoo-security`, and `odoo-upgrade`
   skill manifests with complete reference coverage.
+- Standardized 3-element user request intake triad (User Problem, Current State/Symptom,
+  Expected Result) across development, debugging, and QA references.
+- Solution selection decision hierarchy (Configure vs OCA vs Custom Module) in module structure and development workflows.
+- Blast radius & inheritance impact analysis gates in development and review skills.
+- Production data repair and hotfix scripting protocol (atomic savepoint, notification muting context, reconciliation).
+- Pre-delivery multi-context Definition of Done (DoD) verification matrix (role matrix, multi-company, clean upgrade).
+- Production Load Balancer and Reverse Proxy architecture guide with Nginx configuration template (sticky session, dual-upstream, health check) in deployment operations.
+- Multi-tier caching architecture (browser/assets, ORM cache, method `@tools.ormcache`), multi-worker cache invalidation, and stale cache diagnostics in performance guide.
+- Infrastructure failure modes triage (stale cache desync, load balancer session drops, HTTPS redirect loops) in debugging and review skills.
+- Asynchronous Job Queues guide (native `ir.cron` vs OCA `queue_job` decision matrix, `@job` decorator, channels, auto-retry with backoff) in cron operations.
+- Multi-process worker parallelization sizing formula, memory budgeting rules, and row-level concurrency locking (`FOR UPDATE`) in performance guide.
+- Asynchronous offloading rules and concurrency review gates in development and review skills.
+- Throughput vs Latency metrics guide, Little's Law capacity planning formula, production latency budgets (p50/p95/p99), and log-based latency analysis in performance and monitoring guides.
+- PostgreSQL Connection Pooling (PgBouncer dual-port transaction/session routing) and Read Replica analytical offloading guide in deployment operations.
+- Perimeter rate limiting (Nginx `limit_req_zone`) and automated Fail2ban brute-force protection for `/web/login` and public integration endpoints.
+- Circuit Breaker fault-tolerance pattern for third-party HTTP integrations (payment, shipping, tax) with asynchronous queue fallback in external API references.
+- Stateless cluster architecture guide with distributed object storage (S3 / MinIO via `fs_storage` and presigned URLs) replacing fragile shared NFS.
+- Point-in-Time Recovery (PITR) and Disaster Recovery (DR) runbook with continuous WAL archiving (`pgBackRest`), automated restore verification, and RPO < 5m / RTO < 30m targets.
+- Zero-downtime rolling upgrade protocol and Contract/Expand (Expand, Backfill, Contract) database schema migration pattern for high-volume tables.
+- PostgreSQL Declarative Table Partitioning by date range (`account_move_line`, `stock_move_line`) with partition pruning optimization in performance guide.
 
 ### Changed
 

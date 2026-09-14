@@ -19,6 +19,16 @@ triggers immediate investigation.
 ✓ No zombie worker processes
 ```
 
+### Throughput and Latency SLAs
+
+```text
+✓ Interactive UI request latency within SLA (p50 < 150ms, p95 < 500ms, p99 < 2000ms)
+✓ Application throughput stable without worker starvation (RPS matches peak traffic baseline)
+✓ Zero HTTP 502 Bad Gateway or 504 Gateway Timeout bursts at reverse proxy
+✓ Background asynchronous jobs processing latency < 60s from enqueue (queue_job / mail queue)
+✓ PostgreSQL transaction throughput and buffer cache hit ratio > 98%
+```
+
 ### Application Errors
 
 ```text
@@ -130,6 +140,26 @@ SELECT name, model_id, interval_number, interval_type,
 FROM ir_cron
 WHERE active = true
 ORDER BY nextcall;
+
+-- Database transaction throughput and buffer cache hit ratio (should be > 98%)
+SELECT datname,
+       xact_commit,
+       xact_rollback,
+       blks_read,
+       blks_hit,
+       ROUND(blks_hit * 100.0 / NULLIF(blks_hit + blks_read, 0), 2) AS buffer_cache_hit_pct
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+### HTTP Latency & Throughput Diagnostics
+
+Extract latency percentiles (`p50`, `p95`, `p99`) and throughput from Nginx access logs:
+
+```bash
+# Calculate request latency percentiles from Nginx access log (last field $request_time)
+awk '($9 ~ /200/) {print $NF}' /var/log/nginx/odoo.access.log | sort -n | \
+  awk '{all[NR] = $0} END {print "Total Requests:", NR, "| p50:", all[int(NR*0.5)], "s | p95:", all[int(NR*0.95)], "s | p99:", all[int(NR*0.99)], "s"}'
 ```
 
 ## Hypercare Definition
@@ -186,7 +216,7 @@ Hypercare ends when ALL of the following are true:
 ✓ Cron jobs executing on schedule for full hypercare duration
 ✓ No unbalanced journal entries created since deployment
 ✓ No user-reported data issues unresolved
-✓ Performance metrics within baseline
+✓ Performance metrics and latency SLAs respected (p50 < 150ms, p95 < 500ms, no 502/504 spikes)
 ✓ Key users confirm system is usable
 ✓ Client/PM formally approves exit from hypercare
 ```

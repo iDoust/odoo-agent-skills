@@ -64,6 +64,87 @@ class CustomConfig(models.Model):
 > **Never return a Recordset from an `@ormcache` method!**
 > Recordsets are bound to the database cursor (`cr`). Returning a recordset from cache after the transaction completes causes `psycopg2.InterfaceError: cursor already closed`. Always return primitives, IDs (`record.id`), dictionaries, or lists.
 
+6. **Multi-Tier Caching Architecture:**
+   - **Tier 1: Browser & CDN / Reverse Proxy Cache**:
+     Static web assets under `/[module]/static/` (CSS, JS, images) are served with far-future expiration headers (`expires 7d; Cache-Control: public`). Cache busting is achieved via checksum hashes appended to asset bundles (e.g., `web.assets_backend.min.js?v=hash`).
+   - **Tier 2: Transaction-Level ORM Cache (`env.cache`)**:
+     Field values fetched during an active transaction are kept in memory on `env.cache`. Subsequent accesses within the same transaction are resolved from memory without hitting PostgreSQL. Modifications via ORM automatically invalidate dirty fields; raw SQL requires `self.env.invalidate_all()`.
+   - **Tier 3: Registry-Level Method Cache (`@tools.ormcache`)**:
+     Cross-request in-memory LRU cache tied to the model registry. In multi-worker environments, when one worker calls `self.clear_caches()`, Odoo broadcasts an invalidation signal via PostgreSQL `LISTEN/NOTIFY` on the `im_livechat` / registry channel so sibling workers clear their local memory cache.
+
+7. **Stale Cache Diagnostics Checklist**:
+   - If data modified via SQL or background jobs doesn't appear in the UI: check if `env.invalidate_all()` or `self.clear_caches()` was omitted.
+   - In multi-server / multi-worker setups: ensure PostgreSQL signaling connections are active, or restart the application workers to force cache clearing.
+
+8. **Multi-Process Worker Parallelization & Concurrency**:
+   - **Worker Sizing Formula**:
+     $$\text{Workers} = (\text{CPU Cores} \times 2) + 1$$
+     Example: An 8-core CPU server should allocate `workers = 17` plus dedicated `max_cron_threads = 2`.
+   - **Memory Budgeting Rules**:
+     - `limit_memory_soft = workers * 1073741824` (1 GB per worker).
+     - `limit_memory_hard = workers * 1342177280` (1.25 GB per worker).
+     Odoo worker recycling automatically terminates processes that exceed limits after serving their current request.
+   - **Row-Level Locking in Concurrent Parallel Workers**:
+     When multiple workers execute transactions on related records simultaneously:
+     ```python
+     # Lock records explicitly to serialize access and prevent race conditions
+     self.env.cr.execute("SELECT id FROM my_stock_pool WHERE id = %s FOR UPDATE NOWAIT", [pool_id])
+     ```
+     Use `SKIP LOCKED` when multiple parallel workers pull items from an internal queue table without contention.
+   - **Asynchronous Offloading Rule**:
+     Never execute blocking third-party API requests (>2s) or large batch mutations synchronously inside transactional HTTP workers. Offload to background queues (`queue_job` or `ir.cron`).
+
+9. **Throughput vs Latency: Metrics, Budgets, and Capacity Planning**:
+   - **Definitions**:
+     - **Latency ($L$)**: Duration required to process and respond to an individual client request (e.g. loading a form, confirming an order). Evaluated by percentiles:
+       - **p50 (Median)**: Representative interactive experience for 50% of requests.
+       - **p95**: Tail latency under typical load; reveals slow queries and missing indexes.
+       - **p99**: Extreme tail; catches transaction lock contention and unbounded compute loops.
+     - **Throughput ($X$)**: The aggregate rate of completed requests per second (RPS) or completed business transactions per unit time (TPS: orders confirmed/sec, invoice lines generated/sec).
+   - **Little's Law for Odoo Worker Sizing & Capacity**:
+     $$\text{Throughput (RPS)} = \frac{\text{Concurrency (Active Workers)}}{\text{Average Latency (Seconds)}} \quad \left(X = \frac{W}{L}\right)$$
+     - **Capacity Multiplier**: A cluster with $W = 16$ HTTP workers handling requests at an average latency of $L = 1.0\text{ s}$ has a hard capacity ceiling of $16\text{ RPS}$. If query optimization, ORM prefetching, and `@tools.ormcache` reduce average latency to $L = 0.1\text{ s}$ ($100\text{ ms}$), throughput capacity scales to $160\text{ RPS}$ ($10\times$) on the exact same server hardware.
+     - **Worker Starvation Cascade**: When a slow computation spikes request latency from $200\text{ ms}$ to $2\text{ s}$, capacity drops by $90\%$. Incoming requests queue in Nginx buffers until worker pools exhaust, triggering HTTP 502 Bad Gateway or 504 Gateway Timeout errors.
+   - **Odoo Production Latency Budget Table**:
+
+     | Metric / Transaction Tier | Target SLA | Budget Ceiling | Degraded Action |
+     | :--- | :--- | :--- | :--- |
+     | **p50 (Median Interactive Reads)** | `< 150 ms` | `300 ms` | Verify browser asset caching, CDN, and ORM prefetching |
+     | **p95 (Search & Record Writes)** | `< 500 ms` | `1,000 ms` | Profile SQL with `debug=1`; add indexes on search/group-by fields |
+     | **p99 (Complex Multi-Line Computations)** | `< 2,000 ms` | `3,000 ms` | Eliminate Python loops over recordsets; use SQL batching or `mapped()` |
+     | **Asynchronous Threshold** | `> 2,000 ms` | Sync Timeout | **Mandatory offload**: move to `queue_job` or `ir.cron`; never block HTTP workers |
+
+   - **Performance Tuning Playbook**:
+     - **To Reduce Latency**: Minimize database roundtrips with batch ORM queries, add targeted PostgreSQL B-tree indexes, eliminate N+1 loops, and memoize invariant computations using `@tools.ormcache`.
+     - **To Scale Throughput**: Optimize latency first (via Little's Law), scale multi-process workers up to $(2 \times \text{CPUs}) + 1$, route sticky sessions across multiple application servers via Nginx load balancers, and isolate non-interactive work to asynchronous job queues (`queue_job`).
+
+10. **Declarative Table Partitioning for High-Volume Historical Ledgers**:
+    - **The Challenge**: Core ledger tables (`account_move_line`, `stock_move_line`, `mail_message`) can exceed 10–50 million records in enterprise environments. When table and B-tree index footprints surpass PostgreSQL `shared_buffers` RAM, disk thrashing slows down standard CRUD operations.
+    - **PostgreSQL Range Partitioning Strategy**:
+      Partition large ledger models by `RANGE (date)` into yearly child tables:
+      ```sql
+      -- Create partitioned parent table structure
+      CREATE TABLE account_move_line_partitioned (
+          LIKE account_move_line INCLUDING DEFAULTS INCLUDING CONSTRAINTS
+      ) PARTITION BY RANGE (date);
+
+      -- Define yearly partition child tables
+      CREATE TABLE account_move_line_2024 PARTITION OF account_move_line_partitioned
+          FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+
+      CREATE TABLE account_move_line_2025 PARTITION OF account_move_line_partitioned
+          FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+
+      CREATE TABLE account_move_line_2026 PARTITION OF account_move_line_partitioned
+          FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+      ```
+    - **Partition Pruning Performance Gains**:
+      When an Odoo search domain includes date filters (`[('date', '>=', '2026-01-01'), ('date', '<=', '2026-12-31')]`), the PostgreSQL query planner executes **partition pruning**, scanning solely `account_move_line_2026` and skipping all historical years. This eliminates up to 90% of disk I/O.
+    - **Operational Advantages**:
+      - **RAM Efficiency**: B-tree indexes for the current active fiscal year stay resident in RAM.
+      - **Zero-Downtime Archiving**: Historical partitions older than compliance requirements can be detached (`ALTER TABLE ... DETACH PARTITION`) or compressed into cold tablespaces without acquiring exclusive locks on active operational data.
+      - **Isolated Maintenance**: Autovacuum workers operate per partition, preventing vacuum starvation on massive monolithic tables.
+
 ---
 
 ## 2. Native Large Dataset Generation (`populate` Framework)
@@ -198,4 +279,6 @@ In Odoo 17, 18, and 19, developers can profile web requests directly from the br
 ✓ Cron jobs process records in batches (e.g. limit=500 per run with commit)
 ✓ Heavy reports execute within 5 seconds for 100+ pages
 ✓ Large dataset stress tested with --populate on staging
+✓ Production latency budgets respected: p50 < 150ms, p95 < 500ms, p99 < 2s
+✓ Throughput capacity verified via Little's Law against peak concurrent traffic
 ```

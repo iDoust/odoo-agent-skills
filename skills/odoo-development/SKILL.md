@@ -16,20 +16,28 @@ is outside the supported range instead of silently applying this skill.
 
 ## Workflow
 
-1. Understand the requested behavior and its acceptance criteria.
-2. Detect the Odoo major version from the project manifest, source tree, or
-   runtime metadata. Do not infer it from a module name alone.
-3. Confirm that the version is 17, 18, or 19.
-4. Identify the environment: Community, Enterprise, OCA, or custom addons.
-5. Inspect the existing module, callers, tests, views, data, and security.
-6. Inspect related Odoo core code when the behavior or version boundary matters.
-7. Search for an existing project or Odoo mechanism before adding custom code.
-8. Load only the references relevant to the task and detected version.
-9. Implement the smallest correct change that matches the target version.
-10. Review security, access rights, record rules, company isolation, ORM
-    semantics, and performance when relevant.
-11. Run the smallest meaningful test or validation.
-12. Report any unverified version assumption explicitly.
+1. **Request Intake Triad**: Frame the user request into three explicit elements:
+   - **User Problem**: The underlying business need, user objective, or pain point.
+   - **Current State / Behavior**: What currently happens, baseline data, or error symptoms.
+   - **Expected Result**: Observable success criteria, desired output, and target behavior.
+2. **Version & Environment Detection**: Confirm major version (17, 18, or 19) and edition (Community, Enterprise, OCA).
+3. **Solution Evaluation (Build vs Configure vs OCA)**:
+   - Check if the requirement can be solved via standard Odoo settings or existing core features.
+   - Check if a mature OCA module already covers the need before writing custom code.
+   - Only build custom code for unique business logic.
+4. **Blast Radius & Impact Analysis (Before Writing Code)**:
+   - **Inheritance**: Identify downstream models (`_inherit`) that depend on the model/method to be changed.
+   - **Child XPaths**: Verify that altering view elements won't break inherited views targeting those nodes.
+   - **Database Records**: Check impact of new constraints or `required=True` fields on existing database rows.
+   - **Reports & Templates**: Verify whether dependent QWeb PDF reports or email templates use the changed fields.
+5. **Inspect & Load References**: Inspect relevant project and core code; load only targeted reference guides.
+6. **Minimal Implementation**: Implement the smallest correct change that satisfies the target version contract.
+7. **Pre-Delivery / Definition of Done (DoD) Verification**:
+   - **Clean Upgrade**: Run `odoo-bin -u {module} --stop-after-init` with zero XML warnings or schema errors.
+   - **Multi-Role Testing**: Verify permissions across Administrator, Internal User, and Portal/Public roles.
+   - **Multi-Company Isolation**: Verify that records with `company_id` cannot be accessed across company boundaries.
+   - **Regression & Clean Logs**: Confirm existing business flows succeed and server logs remain clean.
+8. **Report Explicitly**: Detail any unverified version assumptions or migration prerequisites.
 
 ## Reference navigation
 
@@ -43,6 +51,7 @@ is outside the supported range instead of silently applying this skill.
 | Python and browser-facing tests | `../../references/testing/common.md` |
 | QA / SIT test planning and coverage matrix | `../../references/testing/qa-plan.md` |
 | Module-domain patterns | `../../references/modules/README.md` |
+| Module structure and solution selection | `../../references/modules/module-structure.md` |
 | Performance and SQL | `../../references/performance/guide.md` |
 | Web controllers and webhooks | `../../references/integrations/controllers.md` |
 | External APIs (JSON-2, JSON-RPC, XML-RPC) | `../../references/integrations/external-api.md` |
@@ -91,6 +100,12 @@ accounting (`account.move`).
   must never be bypassed.
 - **Zero raw SQL mutations on ledgers**: Never perform raw SQL `UPDATE` or
   `DELETE` on financial records (`account_move`, `account_move_line`).
+- **Asynchronous processing and queue delegation**: Never execute blocking third-party API calls,
+  massive file generation, or heavy batch operations (>2s) synchronously inside transactional HTTP
+  controllers or button actions. Offload them to background workers via OCA `queue_job` (`with_delay()`)
+  or an `ir.cron` batch processor.
+- **Resilient External Integrations (Circuit Breaker)**: Protect external integrations with circuit breakers to fail fast when third-party services degrade, preventing cascading worker starvation.
+- **Stateless Node Discipline**: Never store persistent attachments on local server disk; rely on `ir.attachment` backed by object storage (S3 / MinIO via `fs_storage`) to keep cluster nodes stateless.
 
 
 ## Version decisions

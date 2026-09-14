@@ -4,6 +4,14 @@ This document covers module structure concepts shared by Odoo 17–19. For
 version-specific implementation details, load the matching file under
 `references/versions/` and inspect the target source.
 
+## Solution Selection: Configure vs OCA vs Custom Module
+
+Before creating a new module or adding custom Python/XML code, evaluate according to this decision hierarchy:
+
+1. **Standard Configuration**: Can the requirement be met by standard Odoo settings, automated actions (`base.automation`), server actions, or user interface configurations?
+2. **OCA Community Solutions**: Has the Odoo Community Association already developed and tested a robust module for this requirement (e.g. `web_responsive`, `queue_job`, `account_financial_report`)? Consult [`community-enterprise-solutions.md`](community-enterprise-solutions.md) and [`../operations/oca-guidelines.md`](../operations/oca-guidelines.md).
+3. **Custom Minimal Module**: If the requirement represents unique business logic, build the narrowest possible module adhering to standard Odoo patterns and naming conventions.
+
 ## Module Architecture Overview
 
 Every Odoo module follows a standard structure:

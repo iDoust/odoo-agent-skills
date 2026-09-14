@@ -27,6 +27,13 @@ Date           : {YYYY-MM-DD}
 Severity       : Critical | Major | Minor | Trivial
 ```
 
+### User Request & Defect Intake Triad
+
+When logging defects or evaluating user requests, always structure the issue into the triad:
+1. **User Problem**: The business goal or operation the user was performing.
+2. **Current Condition (Actual Result)**: What currently happens (exact traceback, wrong calculation, or blocked action).
+3. **Expected Result**: The verifiable acceptance criteria and target behavior.
+
 ## Test Categories
 
 Every feature must be tested across four categories. Do not stop at the happy
